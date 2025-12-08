@@ -1,5 +1,3 @@
-...existing code...
-
 # Checkov Security Dashboard — Backend
 
 Bản hướng dẫn này mô tả cách cài đặt, cấu hình và khởi động toàn bộ hệ thống (backend + frontend) trên máy mới, bao gồm PostgreSQL, virtualenv, biến môi trường, và các lệnh kiểm tra thường dùng.

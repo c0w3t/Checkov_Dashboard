@@ -1,0 +1,120 @@
+# ----------------------------
+# OS / Editor
+# ----------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+scripts/*
+
+
+# ----------------------------
+# Python
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.coverage
+.coverage.*
+.coverage
+.python-version
+pip-wheel-metadata/
+pip-log.txt
+*.egg-info/
+.eggs/
+backend/app/schemas/__pycache__
+backend/app/models/__pycache__
+backend/app/middleware/__pycache__
+backend/app/routers/__pycache__
+backend/app/templates/__pycache__
+backend/app/__pycache__
+backend/app/services/__pycache__
+
+# Virtualenvs
+venv/
+.venv/
+backend/venv/
+env/
+ENV/
+
+# Caches / tooling
+.pytest_cache/
+.mypy_cache/
+.tox/
+.cache/
+.local/
+
+# Static DB files (if using sqlite locally)
+*.db
+*.sqlite
+checkov_dashboard.db
+backend/*.db
+
+# Environment files / secrets
+.env
+.env.*
+**/.env
+*.pem
+*.key
+
+# Bytecode
+*.pyc
+__pycache__/
+
+# ----------------------------
+# Backend runtime / uploads / logs
+# ----------------------------
+backend/uploads/
+uploads/
+tmp/
+temp/
+logs/
+*.log
+
+# ----------------------------
+# Frontend / Node
+# ----------------------------
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+build/
+.npm/
+npm-debug.log*
+yarn-error.log
+pnpm-debug.log
+.vite/
+.eslintcache
+
+# TypeScript / IDE
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+
+# ----------------------------
+# Containers / Docker
+# ----------------------------
+docker-compose.override.yml
+docker-compose.local.yml
+*.tar
+*.tgz
+
+# ----------------------------
+# Checkov / scan artifacts
+# ----------------------------
+.checkov/
+.checkov_cache/
+checkov_report_*.json
+
+# ----------------------------
+# Misc
+# ----------------------------
+coverage/
+htmlcov/
+*.bak
+*.orig
+*.tmp
+

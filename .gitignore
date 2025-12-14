@@ -118,3 +118,5 @@ htmlcov/
 *.orig
 *.tmp
 
+#project
+./DA.md

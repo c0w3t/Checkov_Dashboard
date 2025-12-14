@@ -19,24 +19,38 @@ export interface GeneratePolicyResponse {
 
 export interface SuggestFixRequest {
   vulnerability_id: number;
+  provider?: 'openai' | 'gemini';
 }
 
 export interface SuggestFixResponse {
+  success?: boolean;
   original_code: string;
   fixed_code: string;
   explanation: string;
-  changes_summary: string[];
-  risk_level: string;
+  model_used?: string;
+  changes_summary?: string[];
+  risk_level?: string;
 }
 
 export interface ApplyFixRequest {
   vulnerability_id: number;
   fixed_code?: string;
+  provider?: 'openai' | 'gemini';
 }
 
 export interface ApplyFixResponse {
   success: boolean;
   file_path?: string;
+  error?: string;
+}
+
+export interface TriggerScanRequest {
+  vulnerability_id: number;
+}
+
+export interface TriggerScanResponse {
+  success: boolean;
+  scan_id?: number;
   error?: string;
 }
 
@@ -98,6 +112,14 @@ class AIService {
   async applyFix(request: ApplyFixRequest): Promise<ApplyFixResponse> {
     const response = await axios.post<ApplyFixResponse>(
       `${API_BASE_URL}/ai/apply-fix`,
+      request
+    );
+    return response.data;
+  }
+
+  async triggerScan(request: TriggerScanRequest): Promise<TriggerScanResponse> {
+    const response = await axios.post<TriggerScanResponse>(
+      `${API_BASE_URL}/ai/trigger-scan`,
       request
     );
     return response.data;

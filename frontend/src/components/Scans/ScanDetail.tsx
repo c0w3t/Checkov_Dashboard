@@ -11,16 +11,24 @@ import {
   Divider,
   CircularProgress
 } from '@mui/material';
-import { GetApp } from '@mui/icons-material';
+import { GetApp, Edit } from '@mui/icons-material';
 import { scansApi, vulnerabilitiesApi, reportsApi } from '../../services/api';
 import { Scan, Vulnerability } from '../../types';
 import VulnerabilityList from '../Vulnerabilities/VulnerabilityList';
+import FileEditorDialog from './FileEditorDialog';
+import axios from 'axios';
+import { fileEditApi } from '../../services/fileEditApi';
 
 const ScanDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const [scan, setScan] = useState<Scan | null>(null);
   const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorFileName, setEditorFileName] = useState('');
+  const [editorFileContent, setEditorFileContent] = useState('');
+  const [editorUploadId, setEditorUploadId] = useState<string | null>(null);
+  const [editorLoading, setEditorLoading] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -63,6 +71,68 @@ const ScanDetail: React.FC = () => {
     }
   };
 
+  const openEditFromScan = async () => {
+    if (!scan) return;
+    // Derive upload_id from scan metadata if available
+    const uploadPath = (scan.scan_metadata as any)?.upload_path;
+    if (!uploadPath) {
+      alert('No upload context available for this scan.');
+      return;
+    }
+    // upload_id format is "<projectId>_<timestamp>"; find from path .../uploads/project_<id>/<timestamp>
+    try {
+      const parts = uploadPath.split('/');
+      const idx = parts.lastIndexOf(`project_${scan.project_id}`);
+      const timestamp = parts[idx + 1];
+      const uploadId = `${scan.project_id}_${timestamp}`;
+      setEditorUploadId(uploadId);
+      setEditorLoading(true);
+      // Fetch files in upload
+      const filesResp = await axios.get(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/scans/upload/${uploadId}/files`
+      );
+      const files = filesResp.data.files;
+      if (!files || files.length === 0) {
+        alert('No files found in this upload.');
+        setEditorLoading(false);
+        return;
+      }
+      const filePath = files[0].path;
+      setEditorFileName(files[0].name || filePath.split('/').pop() || filePath);
+      // Fetch file content using the same API as Project Detail
+      const contentResp = await fileEditApi.getFileContent(uploadId, filePath);
+      setEditorFileContent(contentResp.content || contentResp.data?.content || '');
+      setEditorOpen(true);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to load file for editing');
+    } finally {
+      setEditorLoading(false);
+    }
+  };
+
+  const handleSaveAndScan = async (content: string) => {
+    if (!editorUploadId || !editorFileName) return { success: false, error: 'No file selected' };
+    try {
+      // Re-fetch file list to get full relative path
+      const filesResp = await axios.get(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/scans/upload/${editorUploadId}/files`
+      );
+      const files = filesResp.data.files;
+      if (!files || files.length === 0) return { success: false, error: 'No files found' };
+      const filePath = files[0].path;
+      const result = await axios.post(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:8000/api'}/scans/upload/${editorUploadId}/file/scan`,
+        { file_path: filePath, content }
+      );
+      // Reload details after scan
+      await loadScanDetail(scan.id);
+      return { success: true, result: result.data };
+    } catch (err: any) {
+      return { success: false, error: err.response?.data?.detail || 'Failed to update and scan' };
+    }
+  };
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
@@ -85,14 +155,24 @@ const ScanDetail: React.FC = () => {
         <CardContent>
           <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
             <Typography variant="h4">Scan #{scan.id}</Typography>
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={<GetApp />}
-              onClick={handleDownloadReport}
-            >
-              Download PDF Report
-            </Button>
+            <Box display="flex" gap={2}>
+              <Button
+                variant="outlined"
+                startIcon={<Edit />}
+                onClick={openEditFromScan}
+                disabled={editorLoading}
+              >
+                Edit & Scan
+              </Button>
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<GetApp />}
+                onClick={handleDownloadReport}
+              >
+                Download PDF Report
+              </Button>
+            </Box>
           </Box>
 
           <Chip 
@@ -183,6 +263,13 @@ const ScanDetail: React.FC = () => {
         Vulnerabilities
       </Typography>
       <VulnerabilityList vulnerabilities={vulnerabilities} />
+      <FileEditorDialog
+        open={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        fileName={editorFileName}
+        initialContent={editorFileContent}
+        onSaveAndScan={handleSaveAndScan}
+      />
     </Box>
   );
 };

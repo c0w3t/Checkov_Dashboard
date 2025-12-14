@@ -15,6 +15,10 @@ from app.models.project import Project
 from pydantic import BaseModel
 from pathlib import Path
 import hashlib
+from urllib.parse import unquote
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -57,10 +61,34 @@ async def get_file_version_history(
 
     Returns all versions of a file in chronological order
     """
+    # Try exact match first
     versions = db.query(FileVersion).filter(
         FileVersion.upload_id == upload_id,
         FileVersion.file_path == file_path
     ).order_by(desc(FileVersion.version_number)).all()
+    logger.info(f"get_file_version_history: upload_id={upload_id} file_path={file_path} exact_matches={len(versions)}")
+
+    # If no exact match, accept upload_id variants such as 'project_1' when UI supplies
+    # 'project_1/20251208_145459' or an encoded form 'project_1%2F20251208_145459'.
+    if not versions:
+        candidate = upload_id
+        # Try URL-decoded form if the client encoded the slash
+        decoded = unquote(upload_id)
+        if decoded != upload_id:
+            candidate = decoded
+
+        if "/" in candidate:
+            prefix = candidate.split("/")[0]
+            versions = db.query(FileVersion).filter(
+                or_(
+                    FileVersion.upload_id == upload_id,
+                    FileVersion.upload_id == candidate,
+                    FileVersion.upload_id == prefix,
+                    FileVersion.upload_id.like(f"{prefix}%")
+                ),
+                FileVersion.file_path == file_path
+            ).order_by(desc(FileVersion.version_number)).all()
+            logger.info(f"get_file_version_history: candidate={candidate} prefix={prefix} fallback_matches={len(versions)}")
 
     if not versions:
         raise HTTPException(status_code=404, detail="No version history found for this file")
@@ -92,9 +120,29 @@ async def list_all_file_versions(
     List all files that have version history for an upload
     """
     # Get distinct file paths for this upload
+    # Exact match
     versions = db.query(FileVersion).filter(
         FileVersion.upload_id == upload_id
     ).order_by(FileVersion.file_path, desc(FileVersion.version_number)).all()
+
+    # Fallback: if UI provided a timestamped upload_id like 'project_1/20251208_145459' or encoded form,
+    # try matching stored records that use the project-level id 'project_1' or prefix.
+    if not versions:
+        candidate = upload_id
+        decoded = unquote(upload_id)
+        if decoded != upload_id:
+            candidate = decoded
+
+        if "/" in candidate:
+            prefix = candidate.split("/")[0]
+            versions = db.query(FileVersion).filter(
+                or_(
+                    FileVersion.upload_id == upload_id,
+                    FileVersion.upload_id == candidate,
+                    FileVersion.upload_id == prefix,
+                    FileVersion.upload_id.like(f"{prefix}%")
+                )
+            ).order_by(FileVersion.file_path, desc(FileVersion.version_number)).all()
 
     if not versions:
         raise HTTPException(status_code=404, detail="No version history found for this upload")

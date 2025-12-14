@@ -13,8 +13,10 @@ import {
   IconButton,
   Tooltip,
   Chip,
+  Select,
+  MenuItem,
 } from '@mui/material';
-import { ContentCopy, AutoFixHigh, CheckCircle } from '@mui/icons-material';
+import { ContentCopy, AutoFixHigh, CheckCircle, PlayCircleOutline } from '@mui/icons-material';
 import aiService, { SuggestFixRequest, SuggestFixResponse, ApplyFixRequest } from '../services/aiService';
 
 interface AIFixSuggesterProps {
@@ -39,10 +41,26 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fixSuggestion, setFixSuggestion] = useState<SuggestFixResponse | null>(null);
+  const [provider, setProvider] = useState<'openai' | 'gemini'>('openai');
   const [copied, setCopied] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applySuccess, setApplySuccess] = useState<string | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<string | null>(null);
+  const [editedCode, setEditedCode] = useState<string>('');
+
+  const computeDiffLines = (original: string, fixed: string) => {
+    const o = original.split('\n');
+    const f = fixed.split('\n');
+    const len = Math.max(o.length, f.length);
+    const rows: { type: 'same' | 'change'; left?: string; right?: string }[] = [];
+    for (let i = 0; i < len; i++) {
+      const ol = o[i] ?? '';
+      const fl = f[i] ?? '';
+      rows.push({ type: ol === fl ? 'same' : 'change', left: ol, right: fl });
+    }
+    return rows;
+  };
 
   const handleGenerateFix = async () => {
     setLoading(true);
@@ -51,11 +69,15 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
 
     const request: SuggestFixRequest = {
       vulnerability_id: vulnerability.id,
+      provider,
     };
 
     try {
       const result = await aiService.suggestFix(request);
       setFixSuggestion(result);
+      if (result?.fixed_code) {
+        setEditedCode(result.fixed_code);
+      }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to generate fix suggestion. Please try again.');
     } finally {
@@ -64,8 +86,9 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
   };
 
   const handleCopyCode = () => {
-    if (fixSuggestion) {
-      navigator.clipboard.writeText(fixSuggestion.fixed_code);
+    const toCopy = editedCode || fixSuggestion?.fixed_code || '';
+    if (toCopy) {
+      navigator.clipboard.writeText(toCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
@@ -86,7 +109,8 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
 
     const request: ApplyFixRequest = {
       vulnerability_id: vulnerability.id,
-      fixed_code: fixSuggestion.fixed_code,
+      fixed_code: editedCode || fixSuggestion.fixed_code,
+      provider,
     };
 
     try {
@@ -100,6 +124,21 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
       setApplyError(err.response?.data?.detail || 'Failed to apply fix.');
     } finally {
       setApplying(false);
+    }
+  };
+
+  const handleTriggerScan = async () => {
+    setScanSuccess(null);
+    setApplyError(null);
+    try {
+      const res = await aiService.triggerScan({ vulnerability_id: vulnerability.id });
+      if (res.success) {
+        setScanSuccess(`Triggered scan #${res.scan_id}`);
+      } else {
+        setApplyError(res.error || 'Failed to trigger scan.');
+      }
+    } catch (err: any) {
+      setApplyError(err.response?.data?.detail || 'Failed to trigger scan.');
     }
   };
 
@@ -117,6 +156,13 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
       </DialogTitle>
       <DialogContent>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Typography variant="subtitle2">Provider:</Typography>
+            <Select size="small" value={provider} onChange={(e) => setProvider(e.target.value as 'openai' | 'gemini')}>
+              <MenuItem value="openai">OpenAI</MenuItem>
+              <MenuItem value="gemini">Gemini</MenuItem>
+            </Select>
+          </Box>
           {error && <Alert severity="error">{error}</Alert>}
 
           <Box>
@@ -160,6 +206,9 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
               {applySuccess && (
                 <Alert severity="success" sx={{ mb: 2 }}>{applySuccess}</Alert>
               )}
+              {scanSuccess && (
+                <Alert severity="success" sx={{ mb: 2 }}>{scanSuccess}</Alert>
+              )}
 
               {Array.isArray(fixSuggestion.changes_summary) && fixSuggestion.changes_summary.length > 0 && (
                 <>
@@ -196,10 +245,39 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
                 </Tooltip>
               </Box>
               <Paper sx={{ p: 2, bgcolor: '#e8f5e9', maxHeight: 200, overflow: 'auto' }}>
-                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
-                  {fixSuggestion.fixed_code}
-                </pre>
+                <textarea
+                  value={editedCode}
+                  onChange={(e) => setEditedCode(e.target.value)}
+                  style={{
+                    width: '100%',
+                    minHeight: 160,
+                    border: 'none',
+                    outline: 'none',
+                    background: 'transparent',
+                    fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                />
               </Paper>
+
+              {fixSuggestion?.original_code && (editedCode || fixSuggestion?.fixed_code) && (
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
+                    Diff Preview:
+                  </Typography>
+                  <Paper sx={{ p: 2, maxHeight: 200, overflow: 'auto', bgcolor: '#f5f5f5' }}>
+                    <pre style={{ margin: 0 }}>
+                      {computeDiffLines(fixSuggestion.original_code, editedCode || fixSuggestion.fixed_code).map((row, idx) => (
+                        <div key={idx} style={{ background: row.type === 'change' ? '#fff3e0' : 'transparent' }}>
+                          <span style={{ color: '#b71c1c' }}>{row.left}</span>
+                          <span>{'  =>  '}</span>
+                          <span style={{ color: '#1b5e20' }}>{row.right}</span>
+                        </div>
+                      ))}
+                    </pre>
+                  </Paper>
+                </Box>
+              )}
             </Box>
           )}
         </Box>
@@ -224,6 +302,16 @@ const AIFixSuggester: React.FC<AIFixSuggesterProps> = ({
             disabled={applying}
           >
             {applying ? 'Applying...' : 'Apply Fix'}
+          </Button>
+        )}
+        {fixSuggestion && (
+          <Button
+            onClick={handleTriggerScan}
+            variant="outlined"
+            color="primary"
+            startIcon={<PlayCircleOutline />}
+          >
+            Trigger Scan
           </Button>
         )}
       </DialogActions>

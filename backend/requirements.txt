@@ -68,6 +68,7 @@ multidict==6.7.0
 networkx==2.6.3
 numpy==2.3.5
 openai==2.9.0
+google-generativeai==0.7.2
 orjson==3.11.4
 packageurl-python==0.13.4
 packaging==23.2

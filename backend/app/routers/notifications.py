@@ -250,6 +250,15 @@ async def get_notification_history(
 
     return history
 
+@router.get("/notifications/history", response_model=List[NotificationHistoryResponse])
+async def get_global_notification_history(
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Get notification history across all projects"""
+    history = db.query(NotificationHistory).order_by(NotificationHistory.sent_at.desc()).limit(limit).all()
+    return history
+
 @router.delete("/projects/{project_id}/notifications/history")
 async def clear_notification_history(
     project_id: int,

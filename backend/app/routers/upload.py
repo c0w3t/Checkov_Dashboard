@@ -23,6 +23,7 @@ from app.schemas.scan import ScanResponse
 from app.services.scan_service import ScanService
 import logging
 import hashlib
+from app.models.notification_settings import NotificationHistory
 
 router = APIRouter()
 scan_service = ScanService()
@@ -86,7 +87,22 @@ async def upload_files(
         
         # Count total files in directory
         total_files = sum(1 for _ in scan_dir.rglob('*') if _.is_file())
-        
+
+        # Log notification: files uploaded
+        try:
+            db.add(NotificationHistory(
+                project_id=project_id,
+                scan_id=None,
+                notification_type="files_uploaded",
+                subject=f"Files uploaded ({total_files})",
+                recipients=[],
+                sent_at=datetime.utcnow(),
+                status="sent",
+            ))
+            db.commit()
+        except Exception:
+            pass
+
         return {
             "message": "Files uploaded successfully",
             "upload_id": upload_id,
@@ -161,6 +177,20 @@ async def update_file_and_scan(
                         raise Exception("File verification failed - content mismatch")
 
                 logging.getLogger(__name__).info(f"File updated and verified: {abs_file_path}")
+                # Log notification: file changed
+                try:
+                    db.add(NotificationHistory(
+                        project_id=project_id,
+                        scan_id=None,
+                        notification_type="file_changed",
+                        subject=f"File changed: {file_path}",
+                        recipients=[],
+                        sent_at=datetime.utcnow(),
+                        status="sent",
+                    ))
+                    db.commit()
+                except Exception:
+                    pass
 
                 # Save file version to database for history tracking
                 content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()

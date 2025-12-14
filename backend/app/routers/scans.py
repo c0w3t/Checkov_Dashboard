@@ -44,11 +44,17 @@ async def create_scan(
         )
     
     # Create scan
-    db_scan = Scan(**scan.dict(), status="pending")
+    db_scan = Scan(**scan.dict(exclude={"skip_checks"}), status="pending")
     db.add(db_scan)
     db.commit()
     db.refresh(db_scan)
     
+    # Persist skip_checks in scan_metadata for ScanService to consume
+    if scan.skip_checks:
+        db_scan.scan_metadata = (db_scan.scan_metadata or {})
+        db_scan.scan_metadata.update({"skip_checks": scan.skip_checks})
+        db.commit()
+
     # Start scan in background
     background_tasks.add_task(scan_service.execute_scan, db_scan.id, db)
     

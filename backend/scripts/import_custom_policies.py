@@ -23,7 +23,9 @@ import json
 
 
 # Import Checkov registries
-from checkov.terraform.checks.resource.registry import Registry as TerraformRegistry
+# For Terraform, the package exposes a pre-instantiated registry object (`resource_registry`),
+# so import that instead of the Registry class (which requires a report_type argument).
+from checkov.terraform.checks.resource.registry import resource_registry as terraform_registry
 from checkov.kubernetes.checks.resource.registry import registry as k8s_registry
 
 logging.basicConfig(level=logging.INFO)
@@ -108,7 +110,8 @@ def import_terraform_policies(db: Session) -> int:
     count = 0
     
     try:
-        tf_reg = TerraformRegistry()
+        # Use the pre-instantiated terraform_registry provided by Checkov
+        tf_reg = terraform_registry
         
         # Get wildcard checks
         for check in tf_reg.wildcard_checks:
@@ -274,11 +277,22 @@ def import_custom_policies(db: Session) -> int:
     """Import custom policies from filesystem"""
     logger.info("Importing custom policies...")
     count = 0
-    
-    custom_policies_dir = Path(__file__).parent.parent.parent.parent / "custom_policies"
-    
+
+    # Prefer CUSTOM_POLICIES_DIR environment variable if set (allows different envs)
+    env_dir = os.getenv('CUSTOM_POLICIES_DIR')
+    if env_dir:
+        custom_policies_dir = Path(env_dir)
+        logger.info(f"Using CUSTOM_POLICIES_DIR from env: {custom_policies_dir}")
+    else:
+        # Fallback to repository relative path
+        custom_policies_dir = Path(__file__).parent.parent.parent.parent / "custom_policies"
+        logger.info(f"No CUSTOM_POLICIES_DIR env var; using repo path: {custom_policies_dir}")
+
+    # Normalize path
+    custom_policies_dir = custom_policies_dir.expanduser().resolve() if custom_policies_dir.exists() else custom_policies_dir.expanduser()
+
     if not custom_policies_dir.exists():
-        logger.info("No custom_policies directory found")
+        logger.info(f"No custom_policies directory found at: {custom_policies_dir}")
         return 0
     
     for platform_dir in custom_policies_dir.iterdir():

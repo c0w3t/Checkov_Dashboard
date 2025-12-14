@@ -1,7 +1,7 @@
 """
 AI Router - API endpoints for AI-powered features
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 from typing import Optional
@@ -32,6 +32,7 @@ class GeneratePolicyResponse(BaseModel):
 
 class SuggestFixRequest(BaseModel):
     vulnerability_id: int
+    provider: Optional[str] = None  # 'openai' | 'gemini'
 
 class SuggestFixResponse(BaseModel):
     success: bool
@@ -69,11 +70,22 @@ class AnalyzeVulnerabilityResponse(BaseModel):
 class ApplyFixRequest(BaseModel):
     vulnerability_id: int
     fixed_code: Optional[str] = None
+    provider: Optional[str] = None  # 'openai' | 'gemini'
 
 class ApplyFixResponse(BaseModel):
     success: bool
     file_path: Optional[str]
     error: Optional[str] = None
+class TriggerScanRequest(BaseModel):
+    vulnerability_id: int
+    fixed_code: Optional[str] = None
+
+class TriggerScanResponse(BaseModel):
+    success: bool
+    scan_id: Optional[int] = None
+    error: Optional[str] = None
+    model_config = ConfigDict(protected_namespaces=())
+
 
 @router.post("/ai/generate-policy", response_model=GeneratePolicyResponse)
 async def generate_custom_policy(
@@ -180,7 +192,8 @@ async def suggest_fix(
         result = ai_service.suggest_fix_for_vulnerability(
             vulnerability=vulnerability_data,
             file_content=file_content,
-            file_path=vuln.file_path
+            file_path=vuln.file_path,
+            provider=request.provider
         )
 
         return SuggestFixResponse(**result)
@@ -305,7 +318,8 @@ async def apply_fix(
             result = ai_service.suggest_fix_for_vulnerability(
                 vulnerability=vulnerability_data,
                 file_content=original_content,
-                file_path=vuln.file_path
+                file_path=vuln.file_path,
+                provider=request.provider
             )
 
             if not result.get("success"):
@@ -427,3 +441,114 @@ async def get_ai_status():
         "available": ai_service.is_available(),
         "model": ai_service.model if ai_service.is_available() else None
     }
+
+from pydantic import BaseModel
+
+class TestGithubRequest(BaseModel):
+    repo_url: str
+    token: Optional[str] = None
+    username: Optional[str] = None
+
+@router.post("/github/test")
+async def test_github_access(payload: TestGithubRequest):
+    """Test GitHub credentials access to a repository using git ls-remote."""
+    from app.services.github_service import GithubService
+    gh = GithubService()
+    result = gh.test_credentials(repo_url=payload.repo_url, token=payload.token, username=payload.username)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "GitHub test failed"))
+    return {"success": True}
+
+@router.post("/ai/trigger-scan", response_model=TriggerScanResponse)
+async def trigger_scan_for_vulnerability(
+    request: TriggerScanRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Trigger a new scan for the project associated with a vulnerability."""
+    vuln = db.query(Vulnerability).filter(Vulnerability.id == request.vulnerability_id).first()
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found")
+
+    project_id = vuln.scan.project_id if vuln.scan else None
+    if not project_id:
+        raise HTTPException(status_code=404, detail="Project not found for vulnerability")
+
+    from app.schemas.scan import ScanCreate
+    from app.services.scan_service import ScanService
+    scan_service = ScanService()
+
+    # Create scan record
+    # Allow optional skip_checks via query in future; for now create basic scan
+    new_scan = ScanCreate(project_id=project_id, scan_type="full", triggered_by="ai-fix")
+    try:
+        # If fixed_code is provided, write it into the latest upload directory before scanning
+        if request.fixed_code is not None:
+            from pathlib import Path
+            base_dir = Path(__file__).resolve().parents[2]
+            # Derive upload dir from stored vuln.file_path if possible
+            vpath = Path(vuln.file_path)
+            upload_dir = None
+            rel_file = vpath.name
+            parts = vpath.parts
+            if "uploads" in parts:
+                idx = parts.index("uploads")
+                # Expect: uploads/project_X/<timestamp>/<relpath>
+                if len(parts) >= idx + 3:
+                    proj_segment = parts[idx+1]
+                    ts_segment = parts[idx+2]
+                    upload_dir = base_dir / "uploads" / proj_segment / ts_segment
+                    rel_file = "/".join(parts[idx+3:]) or rel_file
+            if upload_dir is None:
+                # Fallback to latest upload under uploads/project_<id>
+                proj_dir = base_dir / "uploads" / f"project_{project_id}"
+                if proj_dir.exists():
+                    timestamps = sorted([d for d in proj_dir.iterdir() if d.is_dir()], reverse=True)
+                    upload_dir = timestamps[0] if timestamps else None
+            if upload_dir is None or not upload_dir.exists():
+                raise HTTPException(status_code=404, detail="Upload directory not found for project")
+
+            target_path = (upload_dir / rel_file).resolve()
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(request.fixed_code)
+
+        # Manually create scan (similar to scans.create_scan) to avoid circular import of router
+        from app.models.scan import Scan as ScanModel
+        db_scan = ScanModel(project_id=new_scan.project_id, scan_type=new_scan.scan_type or "manual", status="pending", triggered_by=new_scan.triggered_by)
+        db.add(db_scan)
+        db.commit()
+        db.refresh(db_scan)
+
+        # Propagate skip_checks into scan_metadata if provided in request in future
+        # Example: if request carries request.skip_checks
+        # if hasattr(request, "skip_checks") and request.skip_checks:
+        #     db_scan.scan_metadata = (db_scan.scan_metadata or {})
+        #     db_scan.scan_metadata.update({"skip_checks": request.skip_checks})
+        #     db.commit()
+
+        # Determine target file to scan: use vulnerability's file_path (absolute or within uploads)
+        from pathlib import Path
+        target_file_path = Path(vuln.file_path)
+        if not target_file_path.exists():
+            base_dir = Path(__file__).resolve().parents[2]
+            candidate = base_dir / "uploads" / vuln.file_path
+            target_file_path = candidate if candidate.exists() else target_file_path
+
+        # Auto-detect framework for the file and run file-based scan
+        try:
+            framework = scan_service._detect_file_framework(str(target_file_path))
+        except Exception:
+            framework = "terraform"
+
+        background_tasks.add_task(
+            scan_service.execute_scan_on_upload,
+            db_scan.id,
+            str(target_file_path),
+            framework,
+            db
+        )
+        return TriggerScanResponse(success=True, scan_id=db_scan.id)
+    except Exception as e:
+        db.rollback()
+        return TriggerScanResponse(success=False, error=str(e))

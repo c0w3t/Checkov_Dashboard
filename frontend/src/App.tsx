@@ -12,9 +12,11 @@ import ProjectsPage from './pages/ProjectsPage';
 import ScansPage from './pages/ScansPage';
 import ReportsPage from './pages/ReportsPage';
 import PoliciesPage from './pages/PoliciesPage';
+import NotificationsPage from './pages/NotificationsPage';
 import SettingsPage from './pages/SettingsPage';
 import ProjectDetail from './components/Projects/ProjectDetail';
 import ScanDetail from './components/Scans/ScanDetail';
+import AIFixPage from './pages/AIFixPage';
 
 const theme = createTheme({
   palette: {
@@ -121,7 +123,9 @@ function App() {
                           <Route path="/scans/:id" element={<ScanDetail />} />
                           <Route path="/reports" element={<ReportsPage />} />
                           <Route path="/policies" element={<PoliciesPage />} />
+                          <Route path="/notifications" element={<NotificationsPage />} />
                           <Route path="/settings" element={<SettingsPage />} />
+                          <Route path="/ai-fix/:id" element={<AIFixPage />} />
                         </Routes>
                       </Box>
                     </Box>

@@ -11,9 +11,11 @@ import {
   Divider
 } from '@mui/material';
 import { PlayArrow, Timeline } from '@mui/icons-material';
+import { TextField } from '@mui/material';
 import { projectsApi, scansApi } from '../../services/api';
 import { Project, Scan } from '../../types';
 import ScanHistory from '../Scans/ScanHistory';
+import UploadListDialog from './UploadListDialog';
 import VulnerabilityStatusDialog from '../Vulnerabilities/VulnerabilityStatusDialog';
 
 const ProjectDetail: React.FC = () => {
@@ -21,6 +23,8 @@ const ProjectDetail: React.FC = () => {
   const [project, setProject] = useState<Project | null>(null);
   const [scans, setScans] = useState<Scan[]>([]);
   const [showVulnTracking, setShowVulnTracking] = useState(false);
+  const [skipChecksInput, setSkipChecksInput] = useState<string>("");
+  const [showUploads, setShowUploads] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -50,9 +54,14 @@ const ProjectDetail: React.FC = () => {
   const handleStartScan = async () => {
     if (!project) return;
     try {
+      const skipChecks = skipChecksInput
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
       await scansApi.create({
         project_id: project.id,
-        scan_type: 'full'
+        scan_type: 'full',
+        skip_checks: skipChecks.length ? skipChecks : undefined
       });
       loadScans(project.id);
     } catch (error) {
@@ -78,6 +87,18 @@ const ProjectDetail: React.FC = () => {
               >
                 Vulnerability Tracking
               </Button>
+              <Button
+                variant="outlined"
+                onClick={() => setShowUploads(true)}
+              >
+                Uploads
+              </Button>
+              <TextField
+                label="Skip Checks (comma-separated)"
+                size="small"
+                value={skipChecksInput}
+                onChange={(e) => setSkipChecksInput(e.target.value)}
+              />
               <Button
                 variant="contained"
                 startIcon={<PlayArrow />}
@@ -138,6 +159,18 @@ const ProjectDetail: React.FC = () => {
         projectId={project.id}
         projectName={project.name}
         onClose={() => setShowVulnTracking(false)}
+      />
+
+      {/* Uploads Dialog (Edit & Scan) */}
+      <UploadListDialog
+        open={showUploads}
+        projectId={project.id}
+        projectName={project.name}
+        onClose={() => setShowUploads(false)}
+        onScanStart={(scanId: number) => {
+          // Reload scans after starting
+          loadScans(project.id);
+        }}
       />
     </Box>
   );

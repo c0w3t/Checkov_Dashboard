@@ -40,7 +40,7 @@ export const scansApi = {
   getAll: (projectId?: number) => 
     api.get<Scan[]>('/scans', { params: { project_id: projectId } }),
   getById: (id: number) => api.get<Scan>(`/scans/${id}`),
-  create: (data: { project_id: number; scan_type: string }) => 
+  create: (data: { project_id: number; scan_type: string; skip_checks?: string[] }) => 
     api.post<Scan>('/scans', data),
   update: (id: number, data: Partial<Scan>) => 
     api.put<Scan>(`/scans/${id}`, data),
@@ -95,6 +95,8 @@ export const notificationsApi = {
     }),
   getHistory: (projectId: number, limit: number = 50) =>
     api.get(`/projects/${projectId}/notifications/history`, { params: { limit } }),
+  getGlobalHistory: (limit: number = 100) =>
+    api.get(`/notifications/history`, { params: { limit } }),
   clearHistory: (projectId: number) =>
     api.delete(`/projects/${projectId}/notifications/history`),
 };

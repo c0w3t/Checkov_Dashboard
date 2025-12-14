@@ -1,5 +1,5 @@
 """
-AI Service using OpenAI API
+AI Service supporting multiple providers (OpenAI, Gemini)
 Provides AI-powered features:
 1. Auto-generate custom Checkov policies
 2. Suggest code fixes for vulnerabilities
@@ -7,25 +7,47 @@ Provides AI-powered features:
 """
 import os
 from openai import OpenAI
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import logging
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
 logger = logging.getLogger(__name__)
 
 class AIService:
     def __init__(self):
+        # OpenAI
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
 
-        if not self.api_key:
-            logger.warning("OpenAI API key not configured. AI features will be disabled.")
-            self.client = None
-        else:
-            self.client = OpenAI(api_key=self.api_key)
+        if not self.client:
+            logger.warning("OpenAI API key not configured. OpenAI features disabled.")
+
+        # Gemini
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.gemini_client_available = False
+        if self.gemini_api_key and genai:
+            try:
+                genai.configure(api_key=self.gemini_api_key)
+                # Lazy model creation per call; just mark available
+                self.gemini_client_available = True
+            except Exception as e:
+                logger.warning(f"Failed to configure Gemini: {e}")
 
     def is_available(self) -> bool:
-        """Check if AI service is available"""
-        return self.client is not None
+        """Check if any AI provider is available"""
+        return bool(self.client or self.gemini_client_available)
+
+    def _use_provider(self, provider: Optional[str]) -> str:
+        """Resolve provider to use: 'openai' or 'gemini'"""
+        prov = (provider or "openai").lower()
+        if prov == "gemini" and self.gemini_client_available:
+            return "gemini"
+        return "openai"
 
     def generate_custom_policy(
         self,
@@ -46,8 +68,8 @@ class AIService:
         Returns:
             Dict with policy_code and explanation
         """
-        if not self.is_available():
-            raise Exception("AI service not available. Please configure OPENAI_API_KEY")
+        if not self.client:
+            raise Exception("OpenAI not available. Please configure OPENAI_API_KEY")
 
         prompt = f"""Generate a Checkov custom policy in Python.
 
@@ -126,7 +148,8 @@ Generate ONLY the Python code, no explanations before or after."""
         self,
         vulnerability: Dict[str, Any],
         file_content: str,
-        file_path: str
+        file_path: str,
+        provider: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Suggest code fix for a vulnerability
@@ -139,8 +162,11 @@ Generate ONLY the Python code, no explanations before or after."""
         Returns:
             Dict with suggested_fix (code diff or full content) and explanation
         """
-        if not self.is_available():
-            raise Exception("AI service not available. Please configure OPENAI_API_KEY")
+        provider_to_use = self._use_provider(provider)
+        if provider_to_use == "openai" and not self.client:
+            raise Exception("OpenAI service not available. Please configure OPENAI_API_KEY")
+        if provider_to_use == "gemini" and not self.gemini_client_available:
+            raise Exception("Gemini service not available. Please configure GEMINI_API_KEY")
 
         check_id = vulnerability.get('check_id', 'Unknown')
         check_name = vulnerability.get('check_name', 'Unknown')
@@ -188,16 +214,26 @@ FIXED_CODE:
 Generate ONLY the explanation and fixed code as specified above."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a security expert specializing in fixing infrastructure-as-code vulnerabilities. Always provide complete, working code fixes."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-            )
-
-            content = response.choices[0].message.content
+            if provider_to_use == "openai":
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are a security expert specializing in fixing infrastructure-as-code vulnerabilities. Always provide complete, working code fixes."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                )
+                content = response.choices[0].message.content
+                model_used = self.model
+            else:
+                # Gemini
+                model = genai.GenerativeModel(self.gemini_model_name)
+                resp = model.generate_content([
+                    {"role": "system", "parts": ["You are a security expert specializing in fixing infrastructure-as-code vulnerabilities. Always provide complete, working code fixes."]},
+                    {"role": "user", "parts": [prompt]},
+                ])
+                content = getattr(resp, "text", "")
+                model_used = self.gemini_model_name
 
             # Parse response
             explanation = ""
@@ -224,7 +260,7 @@ Generate ONLY the explanation and fixed code as specified above."""
                 "fixed_code": fixed_code,
                 "original_code": file_content,
                 "changes_made": True,
-                "model_used": self.model
+                "model_used": model_used,
             }
 
         except Exception as e:
@@ -252,8 +288,8 @@ Generate ONLY the explanation and fixed code as specified above."""
         Returns:
             Dict with edited_content and explanation
         """
-        if not self.is_available():
-            raise Exception("AI service not available. Please configure OPENAI_API_KEY")
+        if not self.client:
+            raise Exception("OpenAI not available. Please configure OPENAI_API_KEY")
 
         file_ext = file_path.split('.')[-1]
         language_map = {
@@ -354,8 +390,8 @@ Generate ONLY the changes summary and edited code as specified above."""
         Returns:
             Dict with severity_analysis, potential_impact, remediation_steps
         """
-        if not self.is_available():
-            raise Exception("AI service not available")
+        if not self.client:
+            raise Exception("OpenAI not available")
 
         prompt = f"""Analyze this security vulnerability:
 

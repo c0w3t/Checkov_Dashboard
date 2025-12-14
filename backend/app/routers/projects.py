@@ -11,6 +11,8 @@ from app.models.project import Project
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse
 from pathlib import Path
 import logging
+from datetime import datetime
+from app.models.notification_settings import NotificationHistory
 
 router = APIRouter()
 
@@ -42,6 +44,20 @@ async def create_project(
     db.add(db_project)
     db.commit()
     db.refresh(db_project)
+    # Log notification: project created
+    try:
+        db.add(NotificationHistory(
+            project_id=db_project.id,
+            scan_id=None,
+            notification_type="project_created",
+            subject=f"Project '{db_project.name}' created",
+            recipients=[],
+            sent_at=datetime.utcnow(),
+            status="sent",
+        ))
+        db.commit()
+    except Exception:
+        pass
     return db_project
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -106,4 +122,18 @@ async def delete_project(
     # Delete from database (cascade will delete scans, vulnerabilities, etc.)
     db.delete(project)
     db.commit()
+    # Log notification: project deleted
+    try:
+        db.add(NotificationHistory(
+            project_id=project_id,
+            scan_id=None,
+            notification_type="project_deleted",
+            subject=f"Project '{project.name}' deleted",
+            recipients=[],
+            sent_at=datetime.utcnow(),
+            status="sent",
+        ))
+        db.commit()
+    except Exception:
+        pass
     return None

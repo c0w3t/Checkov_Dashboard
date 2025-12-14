@@ -15,6 +15,7 @@ import {
   Assignment as AssignmentIcon,
   Settings as SettingsIcon,
   Policy as PolicyIcon
+  , Notifications as NotificationsIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -24,6 +25,7 @@ const menuItems = [
   { text: 'Scans', icon: <SecurityIcon />, path: '/scans' },
   { text: 'Reports', icon: <AssignmentIcon />, path: '/reports' },
   { text: 'Policies', icon: <PolicyIcon />, path: '/policies' },
+  { text: 'Notifications', icon: <NotificationsIcon />, path: '/notifications' },
 ];
 
 const Sidebar: React.FC = () => {

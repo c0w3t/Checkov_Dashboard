@@ -11,6 +11,7 @@ class ScanBase(BaseModel):
     commit_sha: Optional[str] = None
     branch: Optional[str] = None
     triggered_by: Optional[str] = None
+    skip_checks: Optional[List[str]] = None
 
 class ScanCreate(ScanBase):
     pass

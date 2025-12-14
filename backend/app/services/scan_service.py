@@ -13,6 +13,8 @@ from app.models.vulnerability import Vulnerability, SeverityLevel
 from app.models.project import Project
 from app.severity_mapping import get_severity_for_check
 from app.services.email_service import EmailService
+from app.services.github_service import GithubService
+from app.models.notification_settings import NotificationHistory
 
 class ScanService:
     def __init__(self):
@@ -22,6 +24,8 @@ class ScanService:
         self.custom_policies_dir = os.getenv("CUSTOM_POLICIES_DIR", default_path)
         # Email service for notifications
         self.email_service = EmailService()
+        # GitHub service for auto-push
+        self.github_service = GithubService()
     
     async def execute_scan(self, scan_id: int, db: Session):
         """Execute Checkov scan"""
@@ -50,18 +54,69 @@ class ScanService:
             }
             
             framework = framework_map.get(project.framework, "terraform")
-            
+
+            # Collect skip checks from scan metadata
+            skip_checks = []
+            try:
+                meta = scan.scan_metadata or {}
+                skip_checks = meta.get("skip_checks", []) or []
+            except Exception:
+                skip_checks = []
+
+            # Resolve scan directory preferring latest upload, then repository_url
+            scan_dir = None
+            try:
+                # Prefer latest upload directory
+                uploads_base = Path(__file__).resolve().parents[2] / "uploads" / f"project_{project.id}"
+                if uploads_base.exists():
+                    timestamps = sorted([d for d in uploads_base.iterdir() if d.is_dir()], reverse=True)
+                    if timestamps:
+                        scan_dir = str(timestamps[0])
+
+                # If no uploads found, use repository_url
+                if not scan_dir:
+                    repo_url = (project.repository_url or "").strip()
+                    if repo_url.startswith("http://") or repo_url.startswith("https://"):
+                        tmp_dir = Path("/tmp") / f"checkov_scan_{project.id}_{scan.id}"
+                        if tmp_dir.exists():
+                            import shutil
+                            shutil.rmtree(tmp_dir, ignore_errors=True)
+                        tmp_dir.mkdir(parents=True, exist_ok=True)
+                        print(f"📥 Cloning repo {repo_url} to {tmp_dir}")
+                        clone_res = subprocess.run([
+                            "git", "clone", "--depth", "1", repo_url, str(tmp_dir)
+                        ], capture_output=True, text=True)
+                        if clone_res.returncode == 0:
+                            scan_dir = str(tmp_dir)
+                        else:
+                            print(f"⚠️ Git clone failed: {clone_res.stderr[:200]}")
+                    elif repo_url and os.path.exists(repo_url):
+                        scan_dir = repo_url
+                if not scan_dir:
+                    scan_dir = "/tmp"
+            except Exception as e:
+                print(f"⚠️ Failed resolving scan directory: {e}")
+                scan_dir = "/tmp"
+
             # Build command
             cmd = [
                 self.checkov_path,
-                "-d", project.repository_url or "/tmp",
+                "-d", scan_dir,
                 "--framework", framework,
-                "--external-checks-dir", f"{self.custom_policies_dir}/{project.framework}",
                 "-o", "json",
                 "--quiet"
             ]
+
+            # Add external checks dir only if exists
+            external_checks_dir = f"{self.custom_policies_dir}/{project.framework}"
+            if os.path.exists(external_checks_dir):
+                cmd.extend(["--external-checks-dir", external_checks_dir])
+
+            if skip_checks:
+                cmd.extend(["--skip-check", ",".join(skip_checks)])
             
             # Execute checkov
+            print(f"🔧 Checkov directory command: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -69,8 +124,16 @@ class ScanService:
                 timeout=600  # 10 minutes timeout
             )
             
-            # Parse results
-            output_data = json.loads(result.stdout) if result.stdout else {}
+            # Parse results robustly
+            output_data = {}
+            if result.stdout:
+                try:
+                    output_data = json.loads(result.stdout)
+                except json.JSONDecodeError as je:
+                    print(f"❌ Failed to parse Checkov JSON: {je}")
+                    output_data = {"summary": {"passed": 0, "failed": 0, "skipped": 0}, "results": {"failed_checks": []}}
+            else:
+                output_data = {"summary": {"passed": 0, "failed": 0, "skipped": 0}, "results": {"failed_checks": []}}
             
             # Update scan with results
             scan.total_checks = output_data.get("summary", {}).get("passed", 0) + \
@@ -87,6 +150,41 @@ class ScanService:
             self._store_vulnerabilities(scan_id, output_data, db)
             
             db.commit()
+            # Log notification history for scan completion
+            try:
+                history = NotificationHistory(
+                    project_id=scan.project_id,
+                    scan_id=scan.id,
+                    notification_type="scan_completed",
+                    subject=f"Scan #{scan.id} completed - {scan.failed_checks} issues found",
+                    recipients=[],
+                    status="sent",
+                    critical_count=0,
+                    high_count=0,
+                    fixed_count=0,
+                    new_count=0,
+                )
+                db.add(history)
+                db.commit()
+            except Exception as nh_err:
+                print(f"⚠️ Failed to log notification history: {nh_err}")
+            # Auto-push to GitHub if project has repository and no failures (for directory scans)
+            try:
+                if project and getattr(project, "repository_url", None) and scan.failed_checks == 0:
+                    push_res = self.github_service.push_to_repo(
+                        repo_url=project.repository_url,
+                        local_path=scan_dir if 'scan_dir' in locals() and scan_dir else (project.repository_url or "/tmp"),
+                        commit_message=f"Scan #{scan_id}: no findings, auto-push",
+                        db=db,
+                        project_id=project.id,
+                        scan_id=scan.id,
+                    )
+                    if not push_res.get("success"):
+                        print(f"⚠️ GitHub push failed: {push_res.get('error')}")
+                    else:
+                        print("🚀 Auto-pushed to GitHub (no findings)")
+            except Exception as gp_err:
+                print(f"⚠️ GitHub push error: {gp_err}")
             
         except subprocess.TimeoutExpired:
             scan.status = "failed"
@@ -273,6 +371,14 @@ class ScanService:
                     except:
                         pass
 
+                    # Collect skip checks from scan metadata
+                    skip_checks = []
+                    try:
+                        meta = scan.scan_metadata or {}
+                        skip_checks = meta.get("skip_checks", []) or []
+                    except Exception:
+                        skip_checks = []
+
                     # Build checkov command for each file
                     cmd = [
                         self.checkov_path,
@@ -287,6 +393,9 @@ class ScanService:
                     custom_policy_path = f"{self.custom_policies_dir}/{fw}"
                     if os.path.exists(custom_policy_path):
                         cmd.extend(["--external-checks-dir", custom_policy_path])
+
+                    if skip_checks:
+                        cmd.extend(["--skip-check", ",".join(skip_checks)])
 
                     print(f"🔧 Checkov command: {' '.join(cmd)}")
 
@@ -353,6 +462,43 @@ class ScanService:
             
             db.commit()
             print(f"✅ Scan completed: {scan.passed_checks} passed, {scan.failed_checks} failed")
+            # Log notification history for upload scan completion
+            try:
+                history = NotificationHistory(
+                    project_id=scan.project_id,
+                    scan_id=scan.id,
+                    notification_type="scan_completed",
+                    subject=f"Scan #{scan.id} completed - {scan.failed_checks} issues found",
+                    recipients=[],
+                    status="sent",
+                    critical_count=0,
+                    high_count=0,
+                    fixed_count=0,
+                    new_count=0,
+                )
+                db.add(history)
+                db.commit()
+            except Exception as nh_err:
+                print(f"⚠️ Failed to log notification history: {nh_err}")
+
+            # Auto-push to GitHub if project has repository and no failures
+            project = db.query(Project).filter(Project.id == scan.project_id).first()
+            if project and getattr(project, "repository_url", None) and scan.failed_checks == 0:
+                try:
+                    push_res = self.github_service.push_to_repo(
+                        repo_url=project.repository_url,
+                        local_path=upload_path,
+                        commit_message=f"Scan #{scan_id}: no findings, auto-push",
+                        db=db,
+                        project_id=project.id,
+                        scan_id=scan.id,
+                    )
+                    if not push_res.get("success"):
+                        print(f"⚠️ GitHub push failed: {push_res.get('error')}")
+                    else:
+                        print("🚀 Auto-pushed to GitHub (no findings)")
+                except Exception as gp_err:
+                    print(f"⚠️ GitHub push error: {gp_err}")
             
         except Exception as e:
             scan.status = "failed"
